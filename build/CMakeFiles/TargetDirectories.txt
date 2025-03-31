@@ -1,0 +1,3 @@
+/home/antonio/kinect/build/CMakeFiles/kinect_capture.dir
+/home/antonio/kinect/build/CMakeFiles/edit_cache.dir
+/home/antonio/kinect/build/CMakeFiles/rebuild_cache.dir
