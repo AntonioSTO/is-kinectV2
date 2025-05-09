@@ -1,99 +1,90 @@
+#include <iostream>
 #include <libfreenect2/libfreenect2.hpp>
 #include <libfreenect2/frame_listener_impl.h>
-#include <opencv2/opencv.hpp>
-#include <iostream>
-#include <filesystem>
-#include <string>
-#include <chrono>
-#include <thread>
+#include <libfreenect2/registration.h>
+#include <pcl/point_types.h>
+#include <pcl/point_cloud.h>
+#include <pcl/visualization/cloud_viewer.h>
 
-int main(int argc, char* argv[]) {
-    int person_id = 1; // Valor padrão
-    int gesture_id = 1; // Valor padrão
-
-    // Processar argumentos do terminal
-    for (int i = 1; i < argc; i++) {
-        std::string arg = argv[i];
-        if (arg == "-p" && i + 1 < argc) {
-            person_id = std::stoi(argv[i + 1]);
-            i++; // Pular o próximo argumento, pois já foi processado
-        } else if (arg == "-g" && i + 1 < argc) {
-            gesture_id = std::stoi(argv[i + 1]);
-            i++;
-        }
-    }
-
+int main()
+{
     libfreenect2::Freenect2 freenect2;
-    libfreenect2::Freenect2Device *dev = nullptr;
-
     if (freenect2.enumerateDevices() == 0) {
-        std::cerr << "Nenhum dispositivo encontrado!" << std::endl;
+        std::cerr << "Nenhum Kinect v2 encontrado!" << std::endl;
         return -1;
     }
 
-    std::string serial = freenect2.getDeviceSerialNumber(0);
-    dev = freenect2.openDevice(serial);
+    std::string serial = freenect2.getDefaultDeviceSerialNumber();
+    libfreenect2::Freenect2Device *dev = freenect2.openDevice(serial);
 
-    libfreenect2::SyncMultiFrameListener listener(libfreenect2::Frame::Color | libfreenect2::Frame::Depth);
-    dev->setColorFrameListener(&listener);
-    dev->setIrAndDepthFrameListener(&listener);
-    dev->start();
-
-    libfreenect2::FrameMap frames;
-    bool capturing = false;
-    int frame_count = 0;
-
-    std::string base_path = "imagens_kinect/";
-    if (!std::filesystem::exists(base_path)) {
-        std::filesystem::create_directory(base_path);
+    if (!dev) {
+        std::cerr << "Falha ao abrir dispositivo." << std::endl;
+        return -1;
     }
 
-    std::string person_gesture_folder = base_path + "p" + (person_id < 10 ? "00" : (person_id < 100 ? "0" : "")) + std::to_string(person_id) + "g" + (gesture_id < 10 ? "0" : "") + std::to_string(gesture_id);
-    std::string rgb_path = person_gesture_folder + "/RGB_imgs/";
-    std::string depth_path = person_gesture_folder + "/Depth_Maps/";
+    libfreenect2::SyncMultiFrameListener listener(libfreenect2::Frame::Color |
+                                                  libfreenect2::Frame::Ir | libfreenect2::Frame::Depth);
+    dev->setColorFrameListener(&listener);
+    dev->setIrAndDepthFrameListener(&listener);
 
-    std::filesystem::create_directories(rgb_path);
-    std::filesystem::create_directories(depth_path);
+    if (!dev->start()) {
+        std::cerr << "Falha ao iniciar o dispositivo." << std::endl;
+        return -1;
+    }
 
-    std::cout << "Capturando para p" << person_id << "g" << gesture_id << std::endl;
-    std::cout << "Pressione 's' para iniciar a captura contínua ou 'q' para sair." << std::endl;
+    libfreenect2::Freenect2Device::IrCameraParams irParams = dev->getIrCameraParams();
+    libfreenect2::Freenect2Device::ColorCameraParams colorParams = dev->getColorCameraParams();
 
-    while (true) {
-        auto start_time = std::chrono::high_resolution_clock::now();
+    libfreenect2::Registration registration(irParams, colorParams);
+    libfreenect2::Frame undistorted(512, 424, 4), registered(512, 424, 4);
 
-        listener.waitForNewFrame(frames);
+    std::cout << "Pressione Ctrl+C para sair." << std::endl;
+
+    pcl::visualization::CloudViewer viewer("Nuvem de Pontos RGB-D");
+
+    while (!viewer.wasStopped()) {
+        libfreenect2::FrameMap frames;
+        if (!listener.waitForNewFrame(frames, 10 * 1000)) {
+            std::cerr << "Timeout esperando novo frame!" << std::endl;
+            break;
+        }
+
         libfreenect2::Frame *rgb = frames[libfreenect2::Frame::Color];
         libfreenect2::Frame *depth = frames[libfreenect2::Frame::Depth];
 
-        cv::Mat rgbMat(rgb->height, rgb->width, CV_8UC4, rgb->data);
-        cv::Mat depthMat(depth->height, depth->width, CV_32FC1, depth->data);
-        cv::Mat depthVis;
-        depthMat.convertTo(depthVis, CV_8UC1, 255.0 / 4500);
-
-        cv::imshow("RGB", rgbMat);
-        cv::imshow("Depth", depthVis);
-
-        char key = cv::waitKey(1);
-        if (key == 's') {
-            capturing = true;
-            std::cout << "Captura iniciada! Pressione 'q' para parar." << std::endl;
+        if (!rgb || !depth) {
+            std::cerr << "Frames nulos recebidos!" << std::endl;
+            listener.release(frames);
+            continue;
         }
-        if (capturing) {
-            std::string rgb_filename = rgb_path + "rgb_frame_" + std::to_string(frame_count) + ".png";
-            std::string depth_filename = depth_path + "depth_frame_" + std::to_string(frame_count) + ".png";
-            cv::imwrite(rgb_filename, rgbMat);
-            cv::imwrite(depth_filename, depthVis);
-            std::cout << "Salvou: " << rgb_filename << " e " << depth_filename << std::endl;
-            frame_count++;
-        }
-        if (key == 'q') break;
 
+        registration.apply(rgb, depth, &undistorted, &registered);
+
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZRGB>());
+        cloud->width = 512;
+        cloud->height = 424;
+        cloud->is_dense = false;
+        cloud->points.resize(cloud->width * cloud->height);
+
+        for (int y = 0; y < 424; ++y) {
+            for (int x = 0; x < 512; ++x) {
+                float rx, ry, rz;
+                registration.getPointXYZRGB(&undistorted, &registered, x, y, rx, ry, rz);
+
+                pcl::PointXYZRGB &pt = cloud->at(x, y);
+                pt.x = rx;
+                pt.y = ry;
+                pt.z = rz;
+
+                uint32_t rgb_val = *reinterpret_cast<uint32_t*>(&registered.data[y * 512 * 4 + x * 4]);
+                pt.r = (rgb_val >> 16) & 0xFF;
+                pt.g = (rgb_val >> 8) & 0xFF;
+                pt.b = rgb_val & 0xFF;
+            }
+        }
+
+        viewer.showCloud(cloud);
         listener.release(frames);
-
-        // Aguarda para manter a taxa de captura em 30 FPS
-        auto end_time = std::chrono::high_resolution_clock::now();
-        std::chrono::milliseconds frame_duration(33);
-        std::this_thread::sleep_for(frame_duration - std::chrono::duration_cast<std::chrono::milliseconds>(end_time - start_time));
     }
 
     dev->stop();

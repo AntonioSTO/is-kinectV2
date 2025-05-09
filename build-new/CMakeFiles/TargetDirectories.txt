@@ -1,0 +1,3 @@
+/home/labvisio/is-kinectV2/build-new/CMakeFiles/kinect_capture.dir
+/home/labvisio/is-kinectV2/build-new/CMakeFiles/edit_cache.dir
+/home/labvisio/is-kinectV2/build-new/CMakeFiles/rebuild_cache.dir
